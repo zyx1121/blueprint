@@ -197,6 +197,73 @@ export function splitEdge(doc: Doc, edgeId: string, pointId: string) {
   }
 }
 
+/**
+ * Snap a group of points moving together: the smallest per-axis correction
+ * that lines any moved point up with any fixed point wins, then the grid,
+ * then plain 0.1 cm rounding.
+ */
+export function snapGroup(
+  doc: Doc,
+  moved: XY[],
+  tol: number,
+  grid: number,
+  exclude: ReadonlySet<string>
+): { dx: number; dy: number; guides: Guide[] } {
+  const fixed = Object.values(doc.points).filter((p) => !exclude.has(p.id));
+  let dx: number | null = null;
+  let dy: number | null = null;
+  let bestX = tol;
+  let bestY = tol;
+  let gx: number | null = null;
+  let gy: number | null = null;
+  for (const m of moved) {
+    for (const q of fixed) {
+      const ax = Math.abs(q.x - m.x);
+      if (ax < bestX) {
+        bestX = ax;
+        dx = q.x - m.x;
+        gx = q.x;
+      }
+      const ay = Math.abs(q.y - m.y);
+      if (ay < bestY) {
+        bestY = ay;
+        dy = q.y - m.y;
+        gy = q.y;
+      }
+    }
+  }
+  const guides: Guide[] = [];
+  if (gx !== null) guides.push({ axis: "x", value: gx });
+  if (gy !== null) guides.push({ axis: "y", value: gy });
+  if (dx === null) dx = gridDelta(moved, (m) => m.x, tol, grid);
+  if (dy === null) dy = gridDelta(moved, (m) => m.y, tol, grid);
+  return { dx, dy, guides };
+}
+
+type XY = { x: number; y: number };
+
+/** Smallest shift that puts one of the moved coordinates on a grid line. */
+function gridDelta(
+  moved: XY[],
+  pick: (m: XY) => number,
+  tol: number,
+  grid: number
+): number {
+  let best = tol;
+  let delta: number | null = null;
+  for (const m of moved) {
+    const v = pick(m);
+    const d = Math.round(v / grid) * grid - v;
+    if (Math.abs(d) < best) {
+      best = Math.abs(d);
+      delta = d;
+    }
+  }
+  if (delta !== null) return delta;
+  const v = pick(moved[0]);
+  return round1(v) - v;
+}
+
 export function edgeBetween(doc: Doc, a: string, b: string): Edge | undefined {
   return Object.values(doc.edges).find(
     (e) => (e.a === a && e.b === b) || (e.a === b && e.b === a)

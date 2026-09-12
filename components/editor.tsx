@@ -17,6 +17,7 @@ import {
   pointIdsOf,
   removeItem,
   round1,
+  snapGroup,
   snapPoint,
   type Doc,
   type Guide,
@@ -27,6 +28,7 @@ import { cn } from "@/lib/utils";
 /** Screen pixels per centimetre at zoom 1. */
 const PX_PER_CM = 4;
 const SNAP_PX = 8;
+const STORAGE_KEY = "blueprint:doc:v1";
 const MIN_K = 0.05;
 const MAX_K = 400;
 
@@ -53,6 +55,19 @@ type Drag =
       moved: boolean;
     };
 
+function loadDoc(): Doc {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Doc;
+      if (parsed.points && parsed.edges && parsed.faces) return parsed;
+    }
+  } catch {
+    // Corrupt or unavailable store: start empty.
+  }
+  return emptyDoc();
+}
+
 const clamp = (v: number, lo: number, hi: number) =>
   Math.min(hi, Math.max(lo, v));
 
@@ -60,7 +75,7 @@ export function Editor() {
   const svgRef = useRef<SVGSVGElement>(null);
   const [tool, setTool] = useState<Tool>("select");
   const [view, setView] = useState<View>({ x: 0, y: 0, k: PX_PER_CM });
-  const [doc, setDoc] = useState<Doc>(emptyDoc);
+  const [doc, setDoc] = useState<Doc>(loadDoc);
   const [sel, setSel] = useState<Item | null>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
   const [guides, setGuides] = useState<Guide[]>([]);
@@ -161,6 +176,16 @@ export function Editor() {
       new Set(exclude),
       new Set(axisExclude)
     );
+
+  // Persist the drawing in this browser (the editor is client-only, so the
+  // initial state can come straight from storage).
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(doc));
+    } catch {
+      // Quota or private mode: the drawing simply stays in memory.
+    }
+  }, [doc]);
 
   // Centre the origin once the canvas has a size.
   useEffect(() => {
@@ -314,20 +339,31 @@ export function Editor() {
       setGuides(s.guides);
       setDrag({ ...drag, b: s, endId: s.pointId ?? null });
     } else {
-      const anchor = drag.origin[drag.ids[0]];
-      const raw = {
-        x: anchor.x + (p.x - drag.start.x),
-        y: anchor.y + (p.y - drag.start.y),
-      };
-      const s = snap(raw, drag.ids);
-      const dx = s.x - anchor.x;
-      const dy = s.y - anchor.y;
+      const shiftX = p.x - drag.start.x;
+      const shiftY = p.y - drag.start.y;
+      const raw = drag.ids.map((id) => ({
+        x: drag.origin[id].x + shiftX,
+        y: drag.origin[id].y + shiftY,
+      }));
+      const s = snapGroup(
+        doc,
+        raw,
+        SNAP_PX / view.k,
+        gridStep(view.k),
+        new Set(drag.ids)
+      );
+      const dx = round1(shiftX + s.dx);
+      const dy = round1(shiftY + s.dy);
       setGuides(s.guides);
       setDoc((d) => {
         const points = { ...d.points };
         for (const id of drag.ids) {
           const o = drag.origin[id];
-          points[id] = { ...points[id], x: o.x + dx, y: o.y + dy };
+          points[id] = {
+            ...points[id],
+            x: round1(o.x + dx),
+            y: round1(o.y + dy),
+          };
         }
         return { ...d, points };
       });
