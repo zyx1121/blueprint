@@ -264,6 +264,55 @@ function gridDelta(
   return round1(v) - v;
 }
 
+export function centroid(doc: Doc, ids: string[]): XY {
+  const pts = ids.map((id) => doc.points[id]).filter(Boolean);
+  const n = pts.length || 1;
+  return {
+    x: pts.reduce((s, p) => s + p.x, 0) / n,
+    y: pts.reduce((s, p) => s + p.y, 0) / n,
+  };
+}
+
+/** Rotate `origin` positions by `deg` around (cx, cy), 0.1 cm rounded. */
+export function rotated(
+  origin: Record<string, XY>,
+  cx: number,
+  cy: number,
+  deg: number
+): Record<string, XY> {
+  const rad = (deg * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const out: Record<string, XY> = {};
+  for (const [id, o] of Object.entries(origin)) {
+    const dx = o.x - cx;
+    const dy = o.y - cy;
+    out[id] = {
+      x: round1(cx + dx * cos - dy * sin),
+      y: round1(cy + dx * sin + dy * cos),
+    };
+  }
+  return out;
+}
+
+/** Heading of an item in degrees [0, 360): its first edge for a face. */
+export function orientation(doc: Doc, item: Item): number | null {
+  let a: Point | undefined;
+  let b: Point | undefined;
+  if (item.kind === "edge") {
+    const e = doc.edges[item.id];
+    a = e && doc.points[e.a];
+    b = e && doc.points[e.b];
+  } else if (item.kind === "face") {
+    const f = doc.faces[item.id];
+    a = f && doc.points[f.points[0]];
+    b = f && doc.points[f.points[1]];
+  }
+  if (!a || !b) return null;
+  const deg = (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI;
+  return ((deg % 360) + 360) % 360;
+}
+
 export function edgeBetween(doc: Doc, a: string, b: string): Edge | undefined {
   return Object.values(doc.edges).find(
     (e) => (e.a === a && e.b === b) || (e.a === b && e.b === a)
