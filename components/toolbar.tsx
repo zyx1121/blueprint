@@ -9,6 +9,7 @@ import {
   Square,
   Trash2,
   Undo2,
+  X,
   type LucideIcon,
 } from "lucide-react";
 
@@ -20,12 +21,13 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
-export type Tool = "select" | "rect" | "line" | "hand";
+export type Tool = "select" | "rect" | "line" | "marker" | "hand";
 
 const TOOLS: { id: Tool; icon: LucideIcon; label: string; key: string }[] = [
   { id: "select", icon: MousePointer2, label: "選取", key: "V" },
   { id: "rect", icon: Square, label: "矩形", key: "R" },
   { id: "line", icon: Slash, label: "線段", key: "L" },
+  { id: "marker", icon: X, label: "標記", key: "M" },
   { id: "hand", icon: Hand, label: "平移", key: "H" },
 ];
 

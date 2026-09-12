@@ -136,7 +136,13 @@ export function Inspector({
   })();
 
   const title =
-    sel.kind === "point" ? "頂點" : sel.kind === "edge" ? "線段" : "面";
+    sel.kind === "point"
+      ? doc.points[sel.id]?.marker
+        ? "標記"
+        : "頂點"
+      : sel.kind === "edge"
+        ? "線段"
+        : "面";
 
   return (
     <aside className="fixed top-6 right-6 z-10 flex w-64 flex-col gap-3 rounded-2xl border border-border/60 bg-background/70 p-4 shadow-lg backdrop-blur-md">

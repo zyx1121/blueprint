@@ -1,4 +1,5 @@
-export type Point = { id: string; x: number; y: number };
+/** A vertex, or with `marker` set, a standalone cross mark on the plan. */
+export type Point = { id: string; x: number; y: number; marker?: true };
 export type Edge = { id: string; a: string; b: string };
 export type Face = { id: string; points: string[] };
 
@@ -317,7 +318,10 @@ export function orientation(doc: Doc, item: Item): number | null {
 export type Clip = { points: Point[]; edges: Edge[]; face: Face | null };
 
 export function clipItem(doc: Doc, item: Item): Clip | null {
-  if (item.kind === "point") return null;
+  if (item.kind === "point") {
+    const p = doc.points[item.id];
+    return p?.marker ? { points: [p], edges: [], face: null } : null;
+  }
   const ids = pointIdsOf(doc, item);
   if (ids.length < 2) return null;
   const points = ids.map((id) => doc.points[id]).filter(Boolean);
@@ -334,10 +338,20 @@ export function clipItem(doc: Doc, item: Item): Clip | null {
 /** Insert a clip shifted by (dx, dy). Mutates `doc`; returns the new item. */
 export function pasteClip(doc: Doc, clip: Clip, dx: number, dy: number): Item {
   const map = new Map<string, string>();
+  let lastPoint = "";
   for (const p of clip.points) {
     const id = uid("p");
+    lastPoint = id;
     map.set(p.id, id);
-    doc.points[id] = { id, x: round1(p.x + dx), y: round1(p.y + dy) };
+    doc.points[id] = {
+      id,
+      x: round1(p.x + dx),
+      y: round1(p.y + dy),
+      ...(p.marker ? { marker: true as const } : {}),
+    };
+  }
+  if (clip.edges.length === 0 && !clip.face) {
+    return { kind: "point", id: lastPoint };
   }
   let lastEdge = "";
   for (const e of clip.edges) {
@@ -507,8 +521,8 @@ export function removeItem(doc: Doc, item: Item): Doc {
   }
   const used = new Set<string>();
   for (const e of Object.values(next.edges)) used.add(e.a).add(e.b);
-  for (const p of Object.keys(next.points))
-    if (!used.has(p)) delete next.points[p];
+  for (const [id, p] of Object.entries(next.points))
+    if (!used.has(id) && !p.marker) delete next.points[id];
   return next;
 }
 
