@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  Copy,
   Hand,
   MousePointer2,
   Redo2,
@@ -34,9 +35,11 @@ type Props = {
   canUndo: boolean;
   canRedo: boolean;
   canDelete: boolean;
+  canCopy: boolean;
   onUndo: () => void;
   onRedo: () => void;
   onDelete: () => void;
+  onDuplicate: () => void;
 };
 
 export function Toolbar({
@@ -45,9 +48,11 @@ export function Toolbar({
   canUndo,
   canRedo,
   canDelete,
+  canCopy,
   onUndo,
   onRedo,
   onDelete,
+  onDuplicate,
 }: Props) {
   return (
     <div className="fixed bottom-6 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-2xl border border-border/60 bg-background/70 p-1.5 shadow-lg backdrop-blur-md">
@@ -72,6 +77,12 @@ export function Toolbar({
         label="重做 (⇧⌘Z)"
         disabled={!canRedo}
         onClick={onRedo}
+      />
+      <ToolButton
+        icon={Copy}
+        label="複製 (⌘D)"
+        disabled={!canCopy}
+        onClick={onDuplicate}
       />
       <ToolButton
         icon={Trash2}

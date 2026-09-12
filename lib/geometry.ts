@@ -313,6 +313,46 @@ export function orientation(doc: Doc, item: Item): number | null {
   return ((deg % 360) + 360) % 360;
 }
 
+/** A detached copy of one item: fresh ids, ready to paste with an offset. */
+export type Clip = { points: Point[]; edges: Edge[]; face: Face | null };
+
+export function clipItem(doc: Doc, item: Item): Clip | null {
+  if (item.kind === "point") return null;
+  const ids = pointIdsOf(doc, item);
+  if (ids.length < 2) return null;
+  const points = ids.map((id) => doc.points[id]).filter(Boolean);
+  const edges =
+    item.kind === "edge"
+      ? [doc.edges[item.id]].filter(Boolean)
+      : ids
+          .map((id, i) => edgeBetween(doc, id, ids[(i + 1) % ids.length]))
+          .filter((e): e is Edge => Boolean(e));
+  const face = item.kind === "face" ? (doc.faces[item.id] ?? null) : null;
+  return { points, edges, face };
+}
+
+/** Insert a clip shifted by (dx, dy). Mutates `doc`; returns the new item. */
+export function pasteClip(doc: Doc, clip: Clip, dx: number, dy: number): Item {
+  const map = new Map<string, string>();
+  for (const p of clip.points) {
+    const id = uid("p");
+    map.set(p.id, id);
+    doc.points[id] = { id, x: round1(p.x + dx), y: round1(p.y + dy) };
+  }
+  let lastEdge = "";
+  for (const e of clip.edges) {
+    const id = uid("e");
+    lastEdge = id;
+    doc.edges[id] = { id, a: map.get(e.a)!, b: map.get(e.b)! };
+  }
+  if (clip.face) {
+    const id = uid("f");
+    doc.faces[id] = { id, points: clip.face.points.map((p) => map.get(p)!) };
+    return { kind: "face", id };
+  }
+  return { kind: "edge", id: lastEdge };
+}
+
 export function edgeBetween(doc: Doc, a: string, b: string): Edge | undefined {
   return Object.values(doc.edges).find(
     (e) => (e.a === a && e.b === b) || (e.a === b && e.b === a)
