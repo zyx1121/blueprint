@@ -11,7 +11,13 @@ export type Doc = {
 export type Item = { kind: "point" | "edge" | "face"; id: string };
 
 export type Guide = { axis: "x" | "y"; value: number };
-export type Snap = { x: number; y: number; pointId?: string; guides: Guide[] };
+export type Snap = {
+  x: number;
+  y: number;
+  pointId?: string;
+  edgeId?: string;
+  guides: Guide[];
+};
 
 /** Nice step values in cm, used by the grid, the scale bar, and grid snapping. */
 export const NICE_STEPS = [
@@ -25,6 +31,9 @@ export const uid = (prefix: string) =>
 
 export const dist = (ax: number, ay: number, bx: number, by: number) =>
   Math.hypot(bx - ax, by - ay);
+
+/** Smallest unit of the model: 0.1 cm. */
+export const round1 = (v: number) => Math.round(v * 10) / 10;
 
 /** Smallest nice step whose on-screen size is at least `minPx`. */
 export function gridStep(k: number, minPx = 12): number {
@@ -41,7 +50,8 @@ export function scaleStep(k: number, maxPx = 160): number {
 
 /**
  * Snap a world position: first to a nearby point, then to the x / y of any
- * point (alignment guides), and finally to the grid.
+ * point (alignment guides), then to a grid line when close to one, and
+ * otherwise round to 0.1 cm.
  */
 export function snapPoint(
   doc: Doc,
@@ -49,7 +59,8 @@ export function snapPoint(
   y: number,
   tol: number,
   grid: number,
-  exclude: ReadonlySet<string>
+  exclude: ReadonlySet<string>,
+  axisExclude: ReadonlySet<string> = exclude
 ): Snap {
   let nearest: Point | undefined;
   let nearestD = tol;
@@ -59,12 +70,14 @@ export function snapPoint(
   let dy = tol;
 
   for (const p of Object.values(doc.points)) {
-    if (exclude.has(p.id)) continue;
-    const d = dist(p.x, p.y, x, y);
-    if (d < nearestD) {
-      nearestD = d;
-      nearest = p;
+    if (!exclude.has(p.id)) {
+      const d = dist(p.x, p.y, x, y);
+      if (d < nearestD) {
+        nearestD = d;
+        nearest = p;
+      }
     }
+    if (axisExclude.has(p.id)) continue;
     const ax = Math.abs(p.x - x);
     if (ax < dx) {
       dx = ax;
@@ -81,9 +94,21 @@ export function snapPoint(
     return { x: nearest.x, y: nearest.y, pointId: nearest.id, guides: [] };
   }
 
+  const onEdge = nearestEdge(doc, x, y, tol, exclude);
+  if (onEdge) {
+    return {
+      x: round1(onEdge.x),
+      y: round1(onEdge.y),
+      edgeId: onEdge.id,
+      guides: [],
+    };
+  }
+
   const guides: Guide[] = [];
-  let sx = Math.round(x / grid) * grid;
-  let sy = Math.round(y / grid) * grid;
+  const gridX = Math.round(x / grid) * grid;
+  const gridY = Math.round(y / grid) * grid;
+  let sx = Math.abs(gridX - x) < tol ? gridX : round1(x);
+  let sy = Math.abs(gridY - y) < tol ? gridY : round1(y);
   if (gx) {
     sx = gx.x;
     guides.push({ axis: "x", value: gx.x });
@@ -93,6 +118,83 @@ export function snapPoint(
     guides.push({ axis: "y", value: gy.y });
   }
   return { x: sx, y: sy, guides };
+}
+
+/** Closest edge whose projection of (x, y) lies within the segment and `tol`. */
+function nearestEdge(
+  doc: Doc,
+  x: number,
+  y: number,
+  tol: number,
+  exclude: ReadonlySet<string>
+): { id: string; x: number; y: number } | null {
+  let best: { id: string; x: number; y: number } | null = null;
+  let bestD = tol;
+  for (const e of Object.values(doc.edges)) {
+    if (exclude.has(e.a) || exclude.has(e.b)) continue;
+    const a = doc.points[e.a];
+    const b = doc.points[e.b];
+    if (!a || !b) continue;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len2 = dx * dx + dy * dy;
+    if (len2 === 0) continue;
+    const t = ((x - a.x) * dx + (y - a.y) * dy) / len2;
+    if (t <= 0 || t >= 1) continue;
+    const px = a.x + t * dx;
+    const py = a.y + t * dy;
+    const d = dist(px, py, x, y);
+    if (d < bestD) {
+      bestD = d;
+      best = { id: e.id, x: px, y: py };
+    }
+  }
+  return best;
+}
+
+/**
+ * Place a point from a snap result: reuse an existing point, or create one
+ * and, when it landed on an edge, split that edge so faces stay closed.
+ * Mutates `doc`.
+ */
+export function placePoint(
+  doc: Doc,
+  at: { x: number; y: number; pointId?: string; edgeId?: string }
+): string {
+  if (at.pointId && doc.points[at.pointId]) return at.pointId;
+  const existing = pointAt(doc, at.x, at.y);
+  if (existing) return existing.id;
+  const id = ensurePoint(doc, at.x, at.y);
+  // The snapped edge may already have been split by an earlier placement.
+  const edgeId = doc.edges[at.edgeId ?? ""]
+    ? at.edgeId
+    : nearestEdge(doc, at.x, at.y, 0.05, new Set([id]))?.id;
+  if (edgeId) splitEdge(doc, edgeId, id);
+  return id;
+}
+
+/** Replace edge a-b with a-p and p-b, inserting p into every face using a-b. */
+export function splitEdge(doc: Doc, edgeId: string, pointId: string) {
+  const e = doc.edges[edgeId];
+  if (!e) return;
+  delete doc.edges[edgeId];
+  ensureEdge(doc, e.a, pointId);
+  ensureEdge(doc, pointId, e.b);
+  for (const f of Object.values(doc.faces)) {
+    const n = f.points.length;
+    for (let i = 0; i < n; i++) {
+      const p = f.points[i];
+      const q = f.points[(i + 1) % n];
+      if ((p === e.a && q === e.b) || (p === e.b && q === e.a)) {
+        f.points = [
+          ...f.points.slice(0, i + 1),
+          pointId,
+          ...f.points.slice(i + 1),
+        ];
+        break;
+      }
+    }
+  }
 }
 
 export function edgeBetween(doc: Doc, a: string, b: string): Edge | undefined {
@@ -217,7 +319,21 @@ export function removeItem(doc: Doc, item: Item): Doc {
       if (e && !faceUsesEdge(next, e)) delete next.edges[e.id];
     }
   } else if (item.kind === "edge") {
+    const edge = next.edges[item.id];
+    if (!edge) return doc;
     delete next.edges[item.id];
+    const sharing = Object.values(next.faces).filter((f) =>
+      faceHasEdge(f, edge.a, edge.b)
+    );
+    if (sharing.length === 2) {
+      const [f1, f2] = sharing;
+      const first = openAt(f1, edge.a, edge.b);
+      const second = openAt(f2, edge.b, edge.a);
+      delete next.faces[f1.id];
+      delete next.faces[f2.id];
+      const id = uid("f");
+      next.faces[id] = { id, points: [...first, ...second.slice(1, -1)] };
+    }
   } else {
     delete next.points[item.id];
     for (const e of Object.values(next.edges)) {
@@ -240,12 +356,75 @@ export function removeItem(doc: Doc, item: Item): Doc {
   return next;
 }
 
-function faceUsesEdge(doc: Doc, e: Edge): boolean {
-  return Object.values(doc.faces).some((f) => {
-    const n = f.points.length;
-    return f.points.some((p, i) => {
-      const q = f.points[(i + 1) % n];
-      return (p === e.a && q === e.b) || (p === e.b && q === e.a);
-    });
+function faceHasEdge(f: Face, a: string, b: string): boolean {
+  const n = f.points.length;
+  return f.points.some((p, i) => {
+    const q = f.points[(i + 1) % n];
+    return (p === a && q === b) || (p === b && q === a);
   });
+}
+
+function faceUsesEdge(doc: Doc, e: Edge): boolean {
+  return Object.values(doc.faces).some((f) => faceHasEdge(f, e.a, e.b));
+}
+
+/** Walk the face boundary from b around to a without crossing edge a-b. */
+function openAt(f: Face, a: string, b: string): string[] {
+  const n = f.points.length;
+  const i = f.points.indexOf(a);
+  const j = f.points.indexOf(b);
+  const seq: string[] = [];
+  if ((i + 1) % n === j) {
+    for (let s = 0; s < n; s++) seq.push(f.points[(j + s) % n]);
+  } else {
+    for (let s = 0; s < n; s++) seq.push(f.points[(i + s) % n]);
+    seq.reverse();
+  }
+  return seq;
+}
+
+/** Shoelace area in cm². */
+export function faceArea(doc: Doc, f: Face): number {
+  const pts = f.points.map((id) => doc.points[id]).filter(Boolean);
+  let sum = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    const q = pts[(i + 1) % pts.length];
+    sum += p.x * q.y - q.x * p.y;
+  }
+  return Math.abs(sum) / 2;
+}
+
+export function facePerimeter(doc: Doc, f: Face): number {
+  const pts = f.points.map((id) => doc.points[id]).filter(Boolean);
+  let sum = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    const q = pts[(i + 1) % pts.length];
+    sum += dist(p.x, p.y, q.x, q.y);
+  }
+  return sum;
+}
+
+/** Bounding box of a face when it is an axis-aligned rectangle. */
+export function axisRect(
+  doc: Doc,
+  f: Face
+): { minX: number; minY: number; maxX: number; maxY: number } | null {
+  if (f.points.length !== 4) return null;
+  const pts = f.points.map((id) => doc.points[id]);
+  if (pts.some((p) => !p)) return null;
+  for (let i = 0; i < 4; i++) {
+    const p = pts[i];
+    const q = pts[(i + 1) % 4];
+    if (p.x !== q.x && p.y !== q.y) return null;
+  }
+  const xs = pts.map((p) => p.x);
+  const ys = pts.map((p) => p.y);
+  return {
+    minX: Math.min(...xs),
+    minY: Math.min(...ys),
+    maxX: Math.max(...xs),
+    maxY: Math.max(...ys),
+  };
 }

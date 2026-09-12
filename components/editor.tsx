@@ -2,17 +2,21 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { Inspector } from "@/components/inspector";
 import { ScaleBar } from "@/components/scale-bar";
 import { Toolbar, type Tool } from "@/components/toolbar";
 import {
+  axisRect,
   closeFaces,
   dist,
   emptyDoc,
   ensureEdge,
   ensurePoint,
   gridStep,
+  placePoint,
   pointIdsOf,
   removeItem,
+  round1,
   snapPoint,
   type Doc,
   type Guide,
@@ -29,11 +33,18 @@ const MAX_K = 400;
 /** screen = world * k + (x, y) */
 type View = { x: number; y: number; k: number };
 type XY = { x: number; y: number };
+type SnapXY = XY & { pointId?: string; edgeId?: string };
 
 type Drag =
   | { type: "pan"; sx: number; sy: number; vx: number; vy: number }
-  | { type: "rect"; a: XY; b: XY }
-  | { type: "line"; a: XY; b: XY; startId: string | null; endId: string | null }
+  | { type: "rect"; a: SnapXY; b: SnapXY }
+  | {
+      type: "line";
+      a: SnapXY;
+      b: SnapXY;
+      startId: string | null;
+      endId: string | null;
+    }
   | {
       type: "move";
       ids: string[];
@@ -91,6 +102,44 @@ export function Editor() {
     setSel(null);
   };
 
+  const movePoints = (updates: Record<string, XY>) => {
+    const points = { ...doc.points };
+    for (const [id, xy] of Object.entries(updates)) {
+      if (points[id])
+        points[id] = { ...points[id], x: round1(xy.x), y: round1(xy.y) };
+    }
+    apply({ ...doc, points });
+  };
+  const setPoint = (id: string, x: number, y: number) =>
+    movePoints({ [id]: { x, y } });
+  /** Keep `a` fixed and slide `b` along the edge direction. */
+  const setEdgeLength = (id: string, length: number) => {
+    const e = doc.edges[id];
+    const a = e && doc.points[e.a];
+    const b = e && doc.points[e.b];
+    if (!a || !b) return;
+    const d = dist(a.x, a.y, b.x, b.y);
+    if (d === 0) return;
+    const ux = (b.x - a.x) / d;
+    const uy = (b.y - a.y) / d;
+    movePoints({ [b.id]: { x: a.x + ux * length, y: a.y + uy * length } });
+  };
+  /** Resize an axis-aligned rectangle, anchored at its top-left corner. */
+  const setRectSize = (id: string, width: number, height: number) => {
+    const f = doc.faces[id];
+    const r = f && axisRect(doc, f);
+    if (!f || !r) return;
+    const updates: Record<string, XY> = {};
+    for (const pid of f.points) {
+      const p = doc.points[pid];
+      updates[pid] = {
+        x: p.x === r.maxX ? r.minX + width : p.x,
+        y: p.y === r.maxY ? r.minY + height : p.y,
+      };
+    }
+    movePoints(updates);
+  };
+
   const toWorld = (e: { clientX: number; clientY: number }): XY => {
     const r = svgRef.current!.getBoundingClientRect();
     return {
@@ -98,14 +147,19 @@ export function Editor() {
       y: (e.clientY - r.top - view.y) / view.k,
     };
   };
-  const snap = (p: XY, exclude: Iterable<string> = []) =>
+  const snap = (
+    p: XY,
+    exclude: Iterable<string> = [],
+    axisExclude: Iterable<string> = exclude
+  ) =>
     snapPoint(
       doc,
       p.x,
       p.y,
       SNAP_PX / view.k,
       gridStep(view.k),
-      new Set(exclude)
+      new Set(exclude),
+      new Set(axisExclude)
     );
 
   // Centre the origin once the canvas has a size.
@@ -255,7 +309,8 @@ export function Editor() {
       setGuides(s.guides);
       setDrag({ ...drag, b: s });
     } else if (drag.type === "line") {
-      const s = snap(p, drag.startId ? [drag.startId] : []);
+      // The start point must not capture the end, but aligning to it is wanted.
+      const s = snap(p, drag.startId ? [drag.startId] : [], []);
       setGuides(s.guides);
       setDrag({ ...drag, b: s, endId: s.pointId ?? null });
     } else {
@@ -288,8 +343,12 @@ export function Editor() {
       const { a, b } = drag;
       if (a.x === b.x || a.y === b.y) return;
       const next = structuredClone(doc);
-      const corners = [a, { x: b.x, y: a.y }, b, { x: a.x, y: b.y }];
-      const ids = corners.map((c) => ensurePoint(next, c.x, c.y));
+      const ids = [
+        placePoint(next, a),
+        ensurePoint(next, b.x, a.y),
+        placePoint(next, b),
+        ensurePoint(next, a.x, b.y),
+      ];
       ids.forEach((id, i) => ensureEdge(next, id, ids[(i + 1) % 4]));
       const key = [...ids].sort().join("|");
       const exists = Object.values(next.faces).some(
@@ -305,8 +364,8 @@ export function Editor() {
       if (startId && startId === endId) return;
       if (dist(a.x, a.y, b.x, b.y) < 1e-6) return;
       const next = structuredClone(doc);
-      const s = startId ?? ensurePoint(next, a.x, a.y);
-      const t = endId ?? ensurePoint(next, b.x, b.y);
+      const s = startId ?? placePoint(next, a);
+      const t = endId ?? placePoint(next, b);
       if (s === t) return;
       closeFaces(next, ensureEdge(next, s, t));
       apply(next);
@@ -321,6 +380,17 @@ export function Editor() {
 
   const { k } = view;
   const step = gridStep(k);
+  const selectedPoints = sel
+    ? pointIdsOf(doc, sel)
+        .map((id) => doc.points[id])
+        .filter(Boolean)
+    : [];
+  const snapTarget =
+    drag?.type === "rect" || drag?.type === "line"
+      ? drag.b.pointId
+        ? drag.b
+        : null
+      : null;
   const major = step * 5;
   const showLabels = k >= 1.5;
   const cursor =
@@ -448,7 +518,7 @@ export function Editor() {
             );
           })}
 
-          {Object.values(doc.points).map((p) => {
+          {selectedPoints.map((p) => {
             const active = sel?.kind === "point" && sel.id === p.id;
             return (
               <circle
@@ -477,6 +547,17 @@ export function Editor() {
               className="fill-primary/10 stroke-primary"
               strokeWidth={1.5}
               strokeDasharray="6 4"
+              vectorEffect="non-scaling-stroke"
+              pointerEvents="none"
+            />
+          )}
+          {snapTarget && (
+            <circle
+              cx={snapTarget.x}
+              cy={snapTarget.y}
+              r={5 / k}
+              className="fill-none stroke-primary"
+              strokeWidth={1.5}
               vectorEffect="non-scaling-stroke"
               pointerEvents="none"
             />
@@ -511,6 +592,15 @@ export function Editor() {
         ))}
       </svg>
 
+      {sel && (
+        <Inspector
+          doc={doc}
+          sel={sel}
+          onPoint={setPoint}
+          onEdgeLength={setEdgeLength}
+          onRectSize={setRectSize}
+        />
+      )}
       <ScaleBar k={k} />
       <Toolbar
         tool={tool}
