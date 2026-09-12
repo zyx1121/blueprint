@@ -13,7 +13,9 @@ import {
   ensureEdge,
   ensurePoint,
   centroid,
+  clipItem,
   gridStep,
+  pasteClip,
   placePoint,
   pointIdsOf,
   removeItem,
@@ -22,6 +24,7 @@ import {
   snapGroup,
   snapPoint,
   type Doc,
+  type Clip,
   type Guide,
   type Item,
 } from "@/lib/geometry";
@@ -65,6 +68,8 @@ type Drag =
       moved: boolean;
     };
 
+/** Each paste lands this far from the source (cm). */
+const PASTE_OFFSET = 10;
 const ROTATE_SNAP_DEG = 15;
 const ROTATE_SNAP_TOL = 3;
 
@@ -128,6 +133,37 @@ export function Editor() {
     if (!sel) return;
     apply(removeItem(doc, sel));
     setSel(null);
+  };
+
+  const clipboard = useRef<{ clip: Clip; pastes: number } | null>(null);
+  const canCopy = sel !== null && sel.kind !== "point";
+  const copy = () => {
+    if (!sel) return;
+    const clip = clipItem(doc, sel);
+    if (clip) clipboard.current = { clip, pastes: 0 };
+  };
+  const paste = () => {
+    const c = clipboard.current;
+    if (!c) return;
+    c.pastes += 1;
+    const next = structuredClone(doc);
+    const item = pasteClip(
+      next,
+      c.clip,
+      PASTE_OFFSET * c.pastes,
+      PASTE_OFFSET * c.pastes
+    );
+    apply(next);
+    setSel(item);
+  };
+  const duplicate = () => {
+    if (!sel) return;
+    const clip = clipItem(doc, sel);
+    if (!clip) return;
+    const next = structuredClone(doc);
+    const item = pasteClip(next, clip, PASTE_OFFSET, PASTE_OFFSET);
+    apply(next);
+    setSel(item);
   };
 
   const movePoints = (updates: Record<string, XY>) => {
@@ -243,6 +279,20 @@ export function Editor() {
         else undo();
         return;
       }
+      if (mod && e.key.toLowerCase() === "c") {
+        copy();
+        return;
+      }
+      if (mod && e.key.toLowerCase() === "v") {
+        e.preventDefault();
+        paste();
+        return;
+      }
+      if (mod && e.key.toLowerCase() === "d") {
+        e.preventDefault();
+        duplicate();
+        return;
+      }
       switch (e.key) {
         case " ":
           e.preventDefault();
@@ -353,12 +403,21 @@ export function Editor() {
     if (tool !== "select" || space || e.button !== 0) return;
     e.stopPropagation();
     svgRef.current!.setPointerCapture(e.pointerId);
-    setSel(item);
-    const ids = pointIdsOf(doc, item);
+    // Alt-drag moves a copy instead of the original.
+    let source = doc;
+    let target = item;
+    const clip = e.altKey ? clipItem(doc, item) : null;
+    if (clip) {
+      source = structuredClone(doc);
+      target = pasteClip(source, clip, 0, 0);
+      apply(source);
+    }
+    setSel(target);
+    const ids = pointIdsOf(source, target);
     const origin = Object.fromEntries(
-      ids.map((id) => [id, { x: doc.points[id].x, y: doc.points[id].y }])
+      ids.map((id) => [id, { x: source.points[id].x, y: source.points[id].y }])
     );
-    txStart.current = doc;
+    txStart.current = source;
     setDrag({ type: "move", ids, origin, start: toWorld(e), moved: false });
   };
 
@@ -736,6 +795,8 @@ export function Editor() {
         canUndo={history.past.length > 0}
         canRedo={history.future.length > 0}
         canDelete={sel !== null}
+        canCopy={canCopy}
+        onDuplicate={duplicate}
         onUndo={undo}
         onRedo={redo}
         onDelete={remove}
