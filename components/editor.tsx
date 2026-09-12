@@ -24,6 +24,7 @@ import {
   snapGroup,
   snapPoint,
   type Doc,
+  uid,
   type Clip,
   type Guide,
   type Item,
@@ -148,7 +149,9 @@ export function Editor() {
   };
 
   const clipboard = useRef<{ clip: Clip; pastes: number } | null>(null);
-  const canCopy = sel !== null && sel.kind !== "point";
+  const canCopy =
+    sel !== null &&
+    (sel.kind !== "point" || Boolean(doc.points[sel.id]?.marker));
   const copy = () => {
     if (!sel) return;
     const clip = clipItem(doc, sel);
@@ -326,6 +329,10 @@ export function Editor() {
         case "H":
           setTool("hand");
           break;
+        case "m":
+        case "M":
+          setTool("marker");
+          break;
         case "Escape":
           setDrag(null);
           setGuides([]);
@@ -374,6 +381,22 @@ export function Editor() {
         b: s,
         startId: s.pointId ?? null,
         endId: null,
+      });
+    } else if (tool === "marker") {
+      // Place a cross mark and let the same gesture drag it into place.
+      const s = snap(p);
+      const next = structuredClone(doc);
+      const id = uid("p");
+      next.points[id] = { id, x: s.x, y: s.y, marker: true };
+      apply(next);
+      setSel({ kind: "point", id });
+      txStart.current = next;
+      setDrag({
+        type: "move",
+        ids: [id],
+        origin: { [id]: { x: s.x, y: s.y } },
+        start: p,
+        moved: false,
       });
     } else {
       setSel(null);
@@ -619,6 +642,7 @@ export function Editor() {
         .map((id) => doc.points[id])
         .filter(Boolean)
     : [];
+  const markers = Object.values(doc.points).filter((p) => p.marker);
   const rotateHandle =
     sel && sel.kind !== "point" && selectedPoints.length >= 2
       ? {
@@ -760,7 +784,31 @@ export function Editor() {
             );
           })}
 
+          {markers.map((m) => {
+            const active = sel?.kind === "point" && sel.id === m.id;
+            const r = 6 / k;
+            return (
+              <g
+                key={m.id}
+                className="cursor-move"
+                onPointerDown={(e) =>
+                  onItemDown(e, { kind: "point", id: m.id })
+                }
+              >
+                <circle cx={m.x} cy={m.y} r={10 / k} fill="transparent" />
+                <path
+                  d={`M ${m.x - r} ${m.y - r} L ${m.x + r} ${m.y + r} M ${m.x + r} ${m.y - r} L ${m.x - r} ${m.y + r}`}
+                  className={active ? "stroke-primary" : "stroke-destructive"}
+                  strokeWidth={active ? 3 : 2}
+                  strokeLinecap="round"
+                  vectorEffect="non-scaling-stroke"
+                  pointerEvents="none"
+                />
+              </g>
+            );
+          })}
           {selectedPoints.map((p) => {
+            if (p.marker) return null;
             const active = sel?.kind === "point" && sel.id === p.id;
             return (
               <circle
