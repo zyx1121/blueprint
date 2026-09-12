@@ -66,7 +66,19 @@ type Drag =
       center: XY;
       startAngle: number;
       moved: boolean;
+    }
+  | {
+      type: "resize";
+      ids: string[];
+      origin: Record<string, XY>;
+      bounds: Bounds;
+      xBound: "minX" | "maxX" | null;
+      yBound: "minY" | "maxY" | null;
+      moved: boolean;
     };
+
+type Bounds = { minX: number; minY: number; maxX: number; maxY: number };
+const MIN_SIZE = 0.1;
 
 /** Each paste lands this far from the source (cm). */
 const PASTE_OFFSET = 10;
@@ -403,6 +415,45 @@ export function Editor() {
     if (tool !== "select" || space || e.button !== 0) return;
     e.stopPropagation();
     svgRef.current!.setPointerCapture(e.pointerId);
+    // A corner or side of a selected axis-aligned rectangle resizes it.
+    if (!e.altKey && sel?.kind === "face" && item.kind !== "face") {
+      const f = doc.faces[sel.id];
+      const r = f && axisRect(doc, f);
+      const handle = pointIdsOf(doc, item);
+      if (f && r && handle.every((id) => f.points.includes(id))) {
+        const xs = handle.map((id) => doc.points[id].x);
+        const ys = handle.map((id) => doc.points[id].y);
+        const xBound = xs.every((x) => x === r.minX)
+          ? "minX"
+          : xs.every((x) => x === r.maxX)
+            ? "maxX"
+            : null;
+        const yBound = ys.every((y) => y === r.minY)
+          ? "minY"
+          : ys.every((y) => y === r.maxY)
+            ? "maxY"
+            : null;
+        if (xBound || yBound) {
+          const origin = Object.fromEntries(
+            f.points.map((id) => [
+              id,
+              { x: doc.points[id].x, y: doc.points[id].y },
+            ])
+          );
+          txStart.current = doc;
+          setDrag({
+            type: "resize",
+            ids: f.points,
+            origin,
+            bounds: r,
+            xBound,
+            yBound,
+            moved: false,
+          });
+          return;
+        }
+      }
+    }
     // Alt-drag moves a copy instead of the original.
     let source = doc;
     let target = item;
@@ -432,6 +483,29 @@ export function Editor() {
       return;
     }
     const p = toWorld(e);
+    if (drag.type === "resize") {
+      const s = snap(p, drag.ids);
+      const b = { ...drag.bounds };
+      if (drag.xBound === "minX") b.minX = Math.min(s.x, b.maxX - MIN_SIZE);
+      if (drag.xBound === "maxX") b.maxX = Math.max(s.x, b.minX + MIN_SIZE);
+      if (drag.yBound === "minY") b.minY = Math.min(s.y, b.maxY - MIN_SIZE);
+      if (drag.yBound === "maxY") b.maxY = Math.max(s.y, b.minY + MIN_SIZE);
+      setGuides(s.guides);
+      setDoc((d) => {
+        const points = { ...d.points };
+        for (const id of drag.ids) {
+          const o = drag.origin[id];
+          points[id] = {
+            ...points[id],
+            x: round1(o.x === drag.bounds.minX ? b.minX : b.maxX),
+            y: round1(o.y === drag.bounds.minY ? b.minY : b.maxY),
+          };
+        }
+        return { ...d, points };
+      });
+      if (!drag.moved) setDrag({ ...drag, moved: true });
+      return;
+    }
     if (drag.type === "rotate") {
       const angle = Math.atan2(p.y - drag.center.y, p.x - drag.center.x);
       let deg = ((angle - drag.startAngle) * 180) / Math.PI;
@@ -525,7 +599,11 @@ export function Editor() {
       if (s === t) return;
       closeFaces(next, ensureEdge(next, s, t));
       apply(next);
-    } else if (drag.type === "move" || drag.type === "rotate") {
+    } else if (
+      drag.type === "move" ||
+      drag.type === "rotate" ||
+      drag.type === "resize"
+    ) {
       const start = txStart.current;
       txStart.current = null;
       if (drag.moved && start && start !== doc) {
