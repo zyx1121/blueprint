@@ -12,10 +12,12 @@ import {
   emptyDoc,
   ensureEdge,
   ensurePoint,
+  centroid,
   gridStep,
   placePoint,
   pointIdsOf,
   removeItem,
+  rotated,
   round1,
   snapGroup,
   snapPoint,
@@ -53,7 +55,18 @@ type Drag =
       origin: Record<string, XY>;
       start: XY;
       moved: boolean;
+    }
+  | {
+      type: "rotate";
+      ids: string[];
+      origin: Record<string, XY>;
+      center: XY;
+      startAngle: number;
+      moved: boolean;
     };
+
+const ROTATE_SNAP_DEG = 15;
+const ROTATE_SNAP_TOL = 3;
 
 function loadDoc(): Doc {
   try {
@@ -305,6 +318,37 @@ export function Editor() {
     }
   };
 
+  const rotate = (item: Item, deltaDeg: number) => {
+    const ids = pointIdsOf(doc, item);
+    if (ids.length < 2) return;
+    const origin = Object.fromEntries(
+      ids.map((id) => [id, { x: doc.points[id].x, y: doc.points[id].y }])
+    );
+    const c = centroid(doc, ids);
+    movePoints(rotated(origin, c.x, c.y, deltaDeg));
+  };
+
+  const onRotateHandleDown = (e: React.PointerEvent) => {
+    if (!sel || e.button !== 0) return;
+    e.stopPropagation();
+    svgRef.current!.setPointerCapture(e.pointerId);
+    const ids = pointIdsOf(doc, sel);
+    const origin = Object.fromEntries(
+      ids.map((id) => [id, { x: doc.points[id].x, y: doc.points[id].y }])
+    );
+    const center = centroid(doc, ids);
+    const p = toWorld(e);
+    txStart.current = doc;
+    setDrag({
+      type: "rotate",
+      ids,
+      origin,
+      center,
+      startAngle: Math.atan2(p.y - center.y, p.x - center.x),
+      moved: false,
+    });
+  };
+
   const onItemDown = (e: React.PointerEvent, item: Item) => {
     if (tool !== "select" || space || e.button !== 0) return;
     e.stopPropagation();
@@ -329,6 +373,23 @@ export function Editor() {
       return;
     }
     const p = toWorld(e);
+    if (drag.type === "rotate") {
+      const angle = Math.atan2(p.y - drag.center.y, p.x - drag.center.x);
+      let deg = ((angle - drag.startAngle) * 180) / Math.PI;
+      const nearest = Math.round(deg / ROTATE_SNAP_DEG) * ROTATE_SNAP_DEG;
+      if (Math.abs(nearest - deg) < ROTATE_SNAP_TOL) deg = nearest;
+      else deg = Math.round(deg);
+      const next = rotated(drag.origin, drag.center.x, drag.center.y, deg);
+      setDoc((d) => {
+        const points = { ...d.points };
+        for (const [id, xy] of Object.entries(next)) {
+          points[id] = { ...points[id], ...xy };
+        }
+        return { ...d, points };
+      });
+      if (!drag.moved) setDrag({ ...drag, moved: true });
+      return;
+    }
     if (drag.type === "rect") {
       const s = snap(p);
       setGuides(s.guides);
@@ -405,7 +466,7 @@ export function Editor() {
       if (s === t) return;
       closeFaces(next, ensureEdge(next, s, t));
       apply(next);
-    } else if (drag.type === "move") {
+    } else if (drag.type === "move" || drag.type === "rotate") {
       const start = txStart.current;
       txStart.current = null;
       if (drag.moved && start && start !== doc) {
@@ -421,6 +482,14 @@ export function Editor() {
         .map((id) => doc.points[id])
         .filter(Boolean)
     : [];
+  const rotateHandle =
+    sel && sel.kind !== "point" && selectedPoints.length >= 2
+      ? {
+          x:
+            selectedPoints.reduce((s, p) => s + p.x, 0) / selectedPoints.length,
+          top: Math.min(...selectedPoints.map((p) => p.y)),
+        }
+      : null;
   const snapTarget =
     drag?.type === "rect" || drag?.type === "line"
       ? drag.b.pointId
@@ -587,6 +656,28 @@ export function Editor() {
               pointerEvents="none"
             />
           )}
+          {rotateHandle && (
+            <g>
+              <line
+                x1={rotateHandle.x}
+                y1={rotateHandle.top}
+                x2={rotateHandle.x}
+                y2={rotateHandle.top - 28 / k}
+                className="stroke-primary"
+                strokeWidth={1}
+                vectorEffect="non-scaling-stroke"
+                pointerEvents="none"
+              />
+              <circle
+                cx={rotateHandle.x}
+                cy={rotateHandle.top - 28 / k}
+                r={6 / k}
+                className="cursor-grab fill-background stroke-primary stroke-2 active:cursor-grabbing"
+                vectorEffect="non-scaling-stroke"
+                onPointerDown={onRotateHandleDown}
+              />
+            </g>
+          )}
           {snapTarget && (
             <circle
               cx={snapTarget.x}
@@ -635,6 +726,7 @@ export function Editor() {
           onPoint={setPoint}
           onEdgeLength={setEdgeLength}
           onRectSize={setRectSize}
+          onRotate={rotate}
         />
       )}
       <ScaleBar k={k} />
