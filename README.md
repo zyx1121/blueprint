@@ -2,14 +2,14 @@
 
 > Sketch a floor plan the way you would on graph paper: drag out rooms, draw walls, and let the corners snap.
 
-[![CI](https://github.com/zyx1121/blueprint/actions/workflows/ci.yml/badge.svg)](https://github.com/zyx1121/blueprint/actions) &nbsp;[![Live](https://img.shields.io/badge/live-blueprint--zyx--tw.vercel.app-111111)](https://blueprint-zyx-tw.vercel.app) &nbsp;[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](#license)
+[![CI](https://github.com/zyx1121/blueprint/actions/workflows/ci.yml/badge.svg)](https://github.com/zyx1121/blueprint/actions) &nbsp;[![Live](https://img.shields.io/badge/live-blueprint.zyx1121.winlab.tw-111111)](https://blueprint.zyx1121.winlab.tw) &nbsp;[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](#license)
 
 Every layout tool is either a full CAD suite or a whiteboard that does not know what a centimetre is. Blueprint is the small thing in between: an infinite SVG canvas, a real scale bar, and shapes that snap to each other so four walls become a room.
 
 ![Blueprint hero](docs/hero.png)
 <sub>Two rooms drawn as rectangles, a third closed from three lines, and a partition wall snapped to the shared corner.</sub>
 
-**[Try it live](https://blueprint-zyx-tw.vercel.app)**
+**[Try it live](https://blueprint.zyx1121.winlab.tw)**
 
 ## Features
 
