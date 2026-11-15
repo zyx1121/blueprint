@@ -29,12 +29,12 @@ import {
   type Guide,
   type Item,
 } from "@/lib/geometry";
+import { applyOps, diff, type Op } from "@/lib/ops";
 import { cn } from "@/lib/utils";
 
 /** Screen pixels per centimetre at zoom 1. */
 const PX_PER_CM = 4;
 const SNAP_PX = 8;
-const STORAGE_KEY = "blueprint:doc:v1";
 const MIN_K = 0.05;
 const MAX_K = 400;
 
@@ -86,27 +86,30 @@ const PASTE_OFFSET = 10;
 const ROTATE_SNAP_DEG = 15;
 const ROTATE_SNAP_TOL = 3;
 
-function loadDoc(): Doc {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as Doc;
-      if (parsed.points && parsed.edges && parsed.faces) return parsed;
-    }
-  } catch {
-    // Corrupt or unavailable store: start empty.
-  }
-  return emptyDoc();
-}
-
 const clamp = (v: number, lo: number, hi: number) =>
   Math.min(hi, Math.max(lo, v));
 
+/** Every visitor edits the same drawing, stored on the server. */
 export function Editor() {
+  const [initial, setInitial] = useState<Doc | null>(null);
+  useEffect(() => {
+    fetch("/api/doc", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+      .then((r: { doc: Doc }) => setInitial(r.doc))
+      // No server (plain `next dev`): draw locally, nothing is shared.
+      .catch(() => setInitial(emptyDoc()));
+  }, []);
+  return initial ? <Board initial={initial} /> : null;
+}
+
+const CLIENT_ID = Math.random().toString(36).slice(2, 10);
+const SYNC_MS = 80;
+
+function Board({ initial }: { initial: Doc }) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [tool, setTool] = useState<Tool>("select");
   const [view, setView] = useState<View>({ x: 0, y: 0, k: PX_PER_CM });
-  const [doc, setDoc] = useState<Doc>(loadDoc);
+  const [doc, setDoc] = useState<Doc>(initial);
   const [sel, setSel] = useState<Item | null>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
   const [guides, setGuides] = useState<Guide[]>([]);
@@ -241,15 +244,57 @@ export function Editor() {
       new Set(axisExclude)
     );
 
-  // Persist the drawing in this browser (the editor is client-only, so the
-  // initial state can come straight from storage).
+  // Share the drawing: send local changes as ops, apply everyone else's.
+  const synced = useRef<Doc>(initial);
+  const latest = useRef<Doc>(initial);
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(doc));
-    } catch {
-      // Quota or private mode: the drawing simply stays in memory.
-    }
+    latest.current = doc;
+    const t = setTimeout(() => {
+      const ops = diff(synced.current, latest.current);
+      if (ops.length === 0) return;
+      synced.current = latest.current;
+      fetch("/api/ops", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ from: CLIENT_ID, ops }),
+      }).catch(() => {
+        // Offline: the next change resends nothing for these entities, so
+        // force a resync from the server when the stream comes back.
+        synced.current = emptyDoc();
+      });
+    }, SYNC_MS);
+    return () => clearTimeout(t);
   }, [doc]);
+
+  useEffect(() => {
+    const remote = (ops: Op[]) => {
+      const map = (d: Doc) => applyOps(d, ops);
+      synced.current = map(synced.current);
+      if (txStart.current) txStart.current = map(txStart.current);
+      setDoc(map);
+      setHistory((h) => ({ past: h.past.map(map), future: h.future.map(map) }));
+    };
+    const es = new EventSource("/api/events");
+    let opened = false;
+    es.onopen = () => {
+      if (!opened) {
+        opened = true;
+        return;
+      }
+      // Reconnected: changes may have been missed, take the server copy.
+      fetch("/api/doc", { cache: "no-store" })
+        .then((r) => r.json())
+        .then((r: { doc: Doc }) => {
+          remote(diff(synced.current, r.doc));
+        })
+        .catch(() => {});
+    };
+    es.onmessage = (e) => {
+      const msg = JSON.parse(e.data) as { from: string; ops: Op[] };
+      if (msg.from !== CLIENT_ID) remote(msg.ops);
+    };
+    return () => es.close();
+  }, []);
 
   // Centre the origin once the canvas has a size.
   useEffect(() => {

@@ -16,7 +16,8 @@ jobs:
           bun-version: 1.3.14
       - run: bun install --frozen-lockfile
       - run: bun run build
-      - run: tar czf "$RUNNER_TEMP/app.tar.gz" -C out .
+      - run: bun build --compile server/main.ts --outfile blueprint
+      - run: mv out web && tar czf "$RUNNER_TEMP/app.tar.gz" blueprint web
       - uses: NYCU-WinLab/carrel-deploy@v1
         with:
           tenant: zyx1121
